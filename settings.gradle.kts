@@ -14,7 +14,6 @@ pluginManagement {
     }
 
     plugins {
-        kotlin("android") version kotlinVersion
         kotlin("plugin.serialization") version kotlinVersion
         id("org.jmailen.kotlinter") version kotlinterVersion
         id("com.android.application") version androidGradlePluginVersion

@@ -2,18 +2,17 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
-    kotlin("android")
     id("org.jmailen.kotlinter")
     //id("com.banno.gordon") version "localVersion"
 }
 
 android {
     namespace = "com.banno.android.gordontest"
-    compileSdk = 35
-    buildToolsVersion = "35.0.0"
+    compileSdk = 37
+    buildToolsVersion = "37.0.0"
     defaultConfig {
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 37
         applicationId = "com.banno.android.gordontest"
         versionCode = 1
         versionName = "1.0"

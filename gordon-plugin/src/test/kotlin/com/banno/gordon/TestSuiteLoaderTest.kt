@@ -46,7 +46,7 @@ class TestSuiteLoaderTest {
             TestCase("com.banno.android.gordontest.StandardTest", "standardB", false, setOf("org.junit.Test")),
             TestCase("com.banno.android.gordontest.StandardTest", "standardIgnore", true, setOf("org.junit.Ignore", "org.junit.Test"))
         )
-        /**
+        /*
          * Purposefully ignoring:
          * - AbstractTest, tests in abstract base classes aren't picked up.
          */

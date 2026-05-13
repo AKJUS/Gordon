@@ -13,6 +13,7 @@ import org.gradle.api.Project
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 import org.gradle.api.attributes.Attribute
 import org.gradle.api.file.RegularFile
+import org.gradle.api.plugins.BasePluginExtension
 import org.gradle.api.plugins.JavaBasePlugin.VERIFICATION_GROUP
 import org.gradle.api.provider.Provider
 import org.gradle.kotlin.dsl.create
@@ -167,9 +168,9 @@ class GordonPlugin : Plugin<Project> {
         }
     }
 
-    private fun ApplicationVariant.aabOutputFile(appProject: Project) = appProject.layout.buildDirectory.file(
-        "outputs/bundle/$name/${appProject.property("archivesBaseName")}-$baseName.aab"
-    )
+    private fun ApplicationVariant.aabOutputFile(appProject: Project) = appProject.extensions.getByType<BasePluginExtension>().archivesName.flatMap {
+        appProject.layout.buildDirectory.file("outputs/bundle/$name/$it-$baseName.aab")
+    }
 
     private fun appDependencyOfFeature(
         featureProject: Project,

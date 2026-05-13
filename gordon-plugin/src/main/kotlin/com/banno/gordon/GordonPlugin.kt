@@ -1,23 +1,14 @@
 package com.banno.gordon
 
 import com.android.build.api.artifact.SingleArtifact
+import com.android.build.api.dsl.ApkSigningConfig
 import com.android.build.api.variant.AndroidTest
-import com.android.build.gradle.AppExtension
-import com.android.build.gradle.TestedExtension
-import com.android.build.gradle.api.ApkVariant
-import com.android.build.gradle.api.ApplicationVariant
-import com.android.build.gradle.internal.attributes.VariantAttr
-import com.android.builder.model.SigningConfig
 import org.gradle.api.Plugin
 import org.gradle.api.Project
-import org.gradle.api.artifacts.component.ProjectComponentIdentifier
-import org.gradle.api.attributes.Attribute
 import org.gradle.api.file.RegularFile
-import org.gradle.api.plugins.BasePluginExtension
 import org.gradle.api.plugins.JavaBasePlugin.VERIFICATION_GROUP
 import org.gradle.api.provider.Provider
 import org.gradle.kotlin.dsl.create
-import org.gradle.kotlin.dsl.getByType
 import org.gradle.kotlin.dsl.register
 import java.util.Locale
 
@@ -25,15 +16,16 @@ class GordonPlugin : Plugin<Project> {
 
     override fun apply(project: Project) {
         val androidPlugin = project.androidPlugin()
-            ?: error("Gordon plugin must be applied after applying the application, library, or dynamic-feature Android plugin")
+            ?: error("Gordon plugin must be applied after applying the application or library Android plugin")
 
         val gordonExtension = project.extensions.create<GordonExtension>("gordon")
 
         fun registerGordonTask(
             androidTestVariant: AndroidTest,
-            testBuildType: String,
             configuration: (GordonTestTask) -> Unit
         ) {
+            val testBuildType = androidTestVariant.buildType.orEmpty()
+
             val variantTaskName = androidTestVariant.name
                 .capitalize(Locale.ROOT)
                 .replace(Regex("AndroidTest$"), "")
@@ -54,8 +46,7 @@ class GordonPlugin : Plugin<Project> {
             dynamicFeatureModuleManifest: Provider<RegularFile>?,
             dynamicFeatureModuleName: String?,
             applicationAab: Provider<RegularFile>?,
-            applicationSigningConfig: SigningConfig?,
-            testInstrumentationRunnerArguments: Map<String, String>,
+            applicationSigningConfig: Provider<ApkSigningConfig>?,
             animationsDisabled: Boolean
         ) {
             task.rootProjectBuildDirectory.set(project.rootProject.layout.buildDirectory)
@@ -70,23 +61,21 @@ class GordonPlugin : Plugin<Project> {
 
             applicationAab?.let(task.applicationAab::set)
 
-            applicationSigningConfig?.storeFile?.let(task.signingKeystoreFile::set)
-            task.signingConfigCredentials.set(
-                SigningConfigCredentials(
-                    storePassword = applicationSigningConfig?.storePassword,
-                    keyAlias = applicationSigningConfig?.keyAlias,
-                    keyPassword = applicationSigningConfig?.keyPassword
-                )
-            )
+            applicationSigningConfig?.map { it.storeFile }?.let(task.signingKeystoreFile::fileProvider)
+            applicationSigningConfig
+                ?.map { SigningConfigCredentials(storePassword = it.storePassword, keyAlias = it.keyAlias, keyPassword = it.keyPassword) }
+                ?.let(task.signingConfigCredentials::set)
+                ?: task.signingConfigCredentials.set(SigningConfigCredentials(null, null, null))
 
             task.androidInstrumentationRunnerOptions.set(
-                androidTestVariant.instrumentationRunner.map { instrumentationRunner ->
-                    InstrumentationRunnerOptions(
-                        testInstrumentationRunner = instrumentationRunner,
-                        testInstrumentationRunnerArguments = testInstrumentationRunnerArguments,
-                        animationsDisabled = animationsDisabled
-                    )
-                }
+                androidTestVariant.instrumentationRunner
+                    .zip(androidTestVariant.instrumentationRunnerArguments) { instrumentationRunner, instrumentationRunnerArguments ->
+                        InstrumentationRunnerOptions(
+                            testInstrumentationRunner = instrumentationRunner,
+                            testInstrumentationRunnerArguments = instrumentationRunnerArguments,
+                            animationsDisabled = animationsDisabled
+                        )
+                    }
             )
 
             task.poolingStrategy.set(gordonExtension.poolingStrategy)
@@ -100,14 +89,10 @@ class GordonPlugin : Plugin<Project> {
             task.leaveApksInstalledAfterRun.set(gordonExtension.leaveApksInstalledAfterRun)
         }
 
-        val testedExtension = project.extensions.getByType<TestedExtension>()
-
         when (androidPlugin) {
             is AndroidPlugin.App -> androidPlugin.componentsExtension.onVariants { applicationVariant ->
                 applicationVariant.androidTest?.let { androidTestVariant ->
-                    registerGordonTask(androidTestVariant, testedExtension.testBuildType) { gordonTask ->
-                        val testedVariant = testedExtension.testVariants.single { it.name == androidTestVariant.name }.testedVariant as ApkVariant
-
+                    registerGordonTask(androidTestVariant) { gordonTask ->
                         configureGordonTask(
                             task = gordonTask,
                             androidTestVariant = androidTestVariant,
@@ -115,42 +100,42 @@ class GordonPlugin : Plugin<Project> {
                             dynamicFeatureModuleManifest = null,
                             dynamicFeatureModuleName = null,
                             applicationAab = applicationVariant.artifacts.get(SingleArtifact.BUNDLE),
-                            applicationSigningConfig = testedVariant.signingConfig,
-                            testInstrumentationRunnerArguments = testedVariant.mergedFlavor.testInstrumentationRunnerArguments,
-                            animationsDisabled = testedExtension.testOptions.animationsDisabled
+                            applicationSigningConfig = androidTestVariant.buildType
+                                ?.let(androidPlugin.androidExtension.buildTypes::named)
+                                ?.map { it.signingConfig },
+                            animationsDisabled = androidPlugin.androidExtension.testOptions.animationsDisabled,
                         )
                     }
                 }
             }
-            is AndroidPlugin.DynamicFeature -> androidPlugin.componentsExtension.onVariants { dynamicFeatureVariant ->
-                dynamicFeatureVariant.androidTest?.let { androidTestVariant ->
-                    registerGordonTask(androidTestVariant, testedExtension.testBuildType) { gordonTask ->
-                        val testedVariant = testedExtension.testVariants.single { it.name == androidTestVariant.name }.testedVariant as ApkVariant
 
-                        val (appProject, appVariant) = appDependencyOfFeature(project, testedVariant)
-                        gordonTask.dependsOn(appProject.tasks.named("bundle${appVariant.name.capitalize(Locale.ROOT)}"))
-                        val applicationAab = appVariant.aabOutputFile(appProject)
-                        val applicationSigningConfig = appVariant.signingConfig
+//            is AndroidPlugin.DynamicFeature -> androidPlugin.componentsExtension.onVariants { dynamicFeatureVariant ->
+//                dynamicFeatureVariant.androidTest?.let { androidTestVariant ->
+//                    registerGordonTask(androidTestVariant) { gordonTask ->
+//                        val testedVariant = testedExtension.testVariants.single { it.name == androidTestVariant.name }.testedVariant as ApkVariant
+//
+//                        val (appProject, appVariant) = appDependencyOfFeature(project, testedVariant)
+//                        gordonTask.dependsOn(appProject.tasks.named("bundle${appVariant.name.capitalize(Locale.ROOT)}"))
+//                        val applicationAab = appVariant.aabOutputFile(appProject)
+//                        val applicationSigningConfig = appVariant.signingConfig
+//
+//                        configureGordonTask(
+//                            task = gordonTask,
+//                            androidTestVariant = androidTestVariant,
+//                            applicationPackage = dynamicFeatureVariant.applicationId,
+//                            dynamicFeatureModuleManifest = dynamicFeatureVariant.artifacts.get(SingleArtifact.MERGED_MANIFEST),
+//                            dynamicFeatureModuleName = project.name,
+//                            applicationAab = applicationAab,
+//                            applicationSigningConfig = applicationSigningConfig,
+//                            animationsDisabled = androidPlugin.androidExtension.testOptions.animationsDisabled,
+//                        )
+//                    }
+//                }
+//            }
 
-                        configureGordonTask(
-                            task = gordonTask,
-                            androidTestVariant = androidTestVariant,
-                            applicationPackage = dynamicFeatureVariant.applicationId,
-                            dynamicFeatureModuleManifest = dynamicFeatureVariant.artifacts.get(SingleArtifact.MERGED_MANIFEST),
-                            dynamicFeatureModuleName = project.name,
-                            applicationAab = applicationAab,
-                            applicationSigningConfig = applicationSigningConfig,
-                            testInstrumentationRunnerArguments = testedVariant.mergedFlavor.testInstrumentationRunnerArguments,
-                            animationsDisabled = testedExtension.testOptions.animationsDisabled
-                        )
-                    }
-                }
-            }
             is AndroidPlugin.Library -> androidPlugin.componentsExtension.onVariants { libraryVariant ->
                 libraryVariant.androidTest?.let { androidTestVariant ->
-                    registerGordonTask(androidTestVariant, testedExtension.testBuildType) { gordonTask ->
-                        val testedVariant = testedExtension.testVariants.single { it.name == androidTestVariant.name }.testedVariant
-
+                    registerGordonTask(androidTestVariant) { gordonTask ->
                         configureGordonTask(
                             task = gordonTask,
                             androidTestVariant = androidTestVariant,
@@ -159,8 +144,7 @@ class GordonPlugin : Plugin<Project> {
                             dynamicFeatureModuleName = null,
                             applicationAab = null,
                             applicationSigningConfig = null,
-                            testInstrumentationRunnerArguments = testedVariant.mergedFlavor.testInstrumentationRunnerArguments,
-                            animationsDisabled = testedExtension.testOptions.animationsDisabled
+                            animationsDisabled = androidPlugin.androidExtension.testOptions.animationsDisabled,
                         )
                     }
                 }
@@ -168,34 +152,34 @@ class GordonPlugin : Plugin<Project> {
         }
     }
 
-    private fun ApplicationVariant.aabOutputFile(appProject: Project) = appProject.extensions.getByType<BasePluginExtension>().archivesName.flatMap {
-        appProject.layout.buildDirectory.file("outputs/bundle/$name/$it-$baseName.aab")
-    }
-
-    private fun appDependencyOfFeature(
-        featureProject: Project,
-        featureVariant: ApkVariant
-    ): Pair<Project, ApplicationVariant> = featureProject
-        .configurations
-        .getByName("${featureVariant.name}RuntimeClasspath")
-        .incoming
-        .resolutionResult
-        .allComponents
-        .filter { it.id is ProjectComponentIdentifier }
-        .associateBy { featureProject.rootProject.project((it.id as ProjectComponentIdentifier).projectPath) }
-        .entries
-        .single { (project, _) -> project.plugins.hasPlugin("com.android.application") }
-        .let { (appProject, component) ->
-            val androidVariantAttributeKey = Attribute.of(VariantAttr.ATTRIBUTE.name, String::class.java)
-
-            val appVariantName = component
-                .variants
-                .mapNotNull { it.attributes.getAttribute(androidVariantAttributeKey) }
-                .single()
-
-            val appExtension = appProject.extensions.getByType<AppExtension>()
-            val appVariant = appExtension.applicationVariants.single { it.name == appVariantName }
-
-            appProject to appVariant
-        }
+//    private fun ApplicationVariant.aabOutputFile(appProject: Project) = appProject.extensions.getByType<BasePluginExtension>().archivesName.flatMap {
+//        appProject.layout.buildDirectory.file("outputs/bundle/$name/$it-$baseName.aab")
+//    }
+//
+//    private fun appDependencyOfFeature(
+//        featureProject: Project,
+//        featureVariant: ApkVariant
+//    ): Pair<Project, ApplicationVariant> = featureProject
+//        .configurations
+//        .getByName("${featureVariant.name}RuntimeClasspath")
+//        .incoming
+//        .resolutionResult
+//        .allComponents
+//        .filter { it.id is ProjectComponentIdentifier }
+//        .associateBy { featureProject.rootProject.project((it.id as ProjectComponentIdentifier).projectPath) }
+//        .entries
+//        .single { (project, _) -> project.plugins.hasPlugin("com.android.application") }
+//        .let { (appProject, component) ->
+//            val androidVariantAttributeKey = Attribute.of(VariantAttr.ATTRIBUTE.name, String::class.java)
+//
+//            val appVariantName = component
+//                .variants
+//                .mapNotNull { it.attributes.getAttribute(androidVariantAttributeKey) }
+//                .single()
+//
+//            val appExtension = appProject.extensions.getByType<AppExtension>()
+//            val appVariant = appExtension.applicationVariants.single { it.name == appVariantName }
+//
+//            appProject to appVariant
+//        }
 }
